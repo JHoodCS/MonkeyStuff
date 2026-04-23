@@ -83,11 +83,12 @@ function mainC()
     slides = buildSlides(big_mat, orbitData, opMode);
 
     % --- Initial Animation State ---
-    state.currSlide  = 1;
-    state.frame      = orbitData.firstFrame;
-    state.isPaused   = false;
-    state.isRunning  = true;
-    state.frameDelay = 1 / 30;
+    state.currSlide       = 1;
+    state.frame           = orbitData.firstFrame;
+    state.isPaused        = false;
+    state.isRunning       = true;
+    state.frameDelay      = 1 / 30;
+    state.pendingSlideStep = 0;   % deferred slide direction (+1/-1) set by key callback
 
     % --- Figure Setup ---
     % Create the main figure window with a dark background, no menu/toolbar,
@@ -198,6 +199,16 @@ function mainC()
         % Propagate updated opMode into controlConfig for this frame
         controlConfig.opMode = opMode;
         % ─────────────────────────────────────────────────────────────────
+
+        % Deferred slide change: key callback sets pendingSlideStep; we act
+        % here, after the pipe read, so graphics handles are never modified
+        % from within a drawnow-triggered callback (avoids re-entrancy crash
+        % on Linux where X11 events fire immediately inside drawnow).
+        if state.pendingSlideStep ~= 0
+            state.currSlide        = mod(state.currSlide - 1 + state.pendingSlideStep, numel(slides)) + 1;
+            graphics.slide         = initializeSlideColumns(state.currSlide);
+            state.pendingSlideStep = 0;
+        end
 
         renderFrame();         % Redraw all graphics for the current frame
         drawnow limitrate;     % Flush pending graphics events, rate-limited
@@ -1041,14 +1052,12 @@ function mainC()
     % direction: +1 = forward, -1 = backward; wraps around cyclically.
     % -------------------------------------------------------------------------
     function stepSlide(direction)
-        % Wrap slide index within [1, numel(slides)]
-        state.currSlide = mod(state.currSlide - 1 + direction, numel(slides)) + 1;
-
-        % Rebuild the left/right columns for the new slide
-        graphics.slide = initializeSlideColumns(state.currSlide);
-
-        % Immediately draw the new slide at the current frame
-        renderFrame();
+        % Set the pending slide direction; the main loop will apply it at a
+        % safe point after the pipe read, avoiding re-entrancy on Linux.
+        % Only honour the request if no step is already queued.
+        if state.pendingSlideStep == 0
+            state.pendingSlideStep = direction;
+        end
     end
 
     % -------------------------------------------------------------------------
@@ -1070,17 +1079,21 @@ function mainC()
     %   Escape       →  close the window
     % -------------------------------------------------------------------------
     function onKeyPress(~, event)
+        % Guard: ignore callbacks that arrive after the figure is deleted
+        % (can happen on Linux when a key is held during shutdown)
+        if ~state.isRunning || ~ishandle(fig)
+            return;
+        end
         switch event.Key
             case 'rightarrow'
                 stepSlide(1);
             case 'leftarrow'
                 stepSlide(-1);
             case 'space'
+                % Space toggling is lightweight — safe to apply immediately
                 state.isPaused = ~state.isPaused;
-                renderFrame();
             case 'home'
                 state.frame = orbitData.firstFrame;
-                renderFrame();
             case 'escape'
                 onClose(fig, []);
         end
