@@ -5,6 +5,7 @@
 % |                                                           |
 % | Usage:                                                    |
 % |                                                           |
+% | Initialize:                     matlab_client_sender()    |
 % | Satellite "In Contact":         matlab_client_sender(1)   |
 % | Satellite "Not In Contact":     matlab_client_sender(0)   |
 % =============================================================
