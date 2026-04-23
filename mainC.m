@@ -7,13 +7,19 @@ function mainC()
     close all force;
 
     % =========================================================================
-    % OPERATING MODE — converted from numeric s.mode each frame.
-    %   s.mode 1, 2  → ignored (previous mode held)
-    %   s.mode 3     → 'Safe'    (big_mat rows 3 and 6)
-    %   s.mode 4     → 'Nominal' (big_mat rows 4 and 7)
-    %   s.mode 5     → 'Peak'    (big_mat rows 5 and 8)
+    % OPERATING MODE — mapped from numeric s.mode each frame.
+    %   s.mode 0, 1  → animation paused; hold until mode 2, 3, or 4
+    %   s.mode 2     → 'Nominal' (big_mat power rows 4 and 7)
+    %   s.mode 3     → 'Peak'    (big_mat power rows 5 and 8)
+    %   s.mode 4     → 'Safe'    (big_mat power rows 3 and 6)
+    %
+    % FREQUENCY (s.freq):
+    %   s.freq 0     → S-band  (big_mat row 2)
+    %   s.freq 1     → UHF     (big_mat row 1)
     % =========================================================================
     opMode = 'Nominal';  % default until first valid mode is received
+    matlab_client_sender(); % SEDA: Initialized tx pipe
+    matlab_state_client(); % SEDA: Initialized rx pipe
 
     % --- Data Loading ---
     % Find and load the simulation data file (big_mat.mat) from the same
@@ -161,10 +167,37 @@ function mainC()
     while state.isRunning && ishandle(fig)
         tic;  % Start frame timer
 
-        % Convert numeric mode from s.mode to the string expected by the viewer.
-        % Modes 1 and 2 are ignored — the previous opMode is kept unchanged.
-        % Modes 3, 4, 5 map to Safe, Nominal, Peak respectively.
-        %opMode = numericModeToString(s.mode, opMode);
+        % ── Read live state from C pipe ───────────────────────────────────
+        s = matlab_state_client("get");
+
+        % mode 0 or 1 → hold animation paused until a valid mode arrives
+        if s.mode == 0 || s.mode == 1
+            state.isPaused = true;
+        else
+            state.isPaused = false;
+            % Map numeric mode to opMode string
+            %   2 → Nominal,  3 → Peak,  4 → Safe
+            switch s.mode
+                case 2,  opMode = 'Nominal';
+                case 3,  opMode = 'Peak';
+                case 4,  opMode = 'Safe';
+            end
+        end
+
+        % freq 0 → S-band (big_mat row 2),  freq 1 → UHF (big_mat row 1)
+        if s.freq == 0
+            controlConfig.liveActiveBand = 'S-BAND';
+        else
+            controlConfig.liveActiveBand = 'UHF';
+        end
+
+        % Live packet count and task string from pipe
+        controlConfig.livePacketCount = s.count;
+        controlConfig.liveTasks       = s.tasks;
+
+        % Propagate updated opMode into controlConfig for this frame
+        controlConfig.opMode = opMode;
+        % ─────────────────────────────────────────────────────────────────
 
         renderFrame();         % Redraw all graphics for the current frame
         drawnow limitrate;     % Flush pending graphics events, rate-limited
@@ -415,17 +448,19 @@ function mainC()
         ax.XTick = 1;
         ax.XTickLabel = {spec.xLabel};
         ax.XTickLabelRotation = 0;
+        ax.XColor = [0.92 0.94 0.99];  % Bright x-axis label
+        ax.YColor = [0.92 0.94 0.99];  % Bright y-axis numbers
         grid(ax, 'on');
         ax.GridAlpha = 0.16;
         ax.GridColor = themeValue.gridColor;
 
         % Numeric value text rendered just above the bar top
         item.valueText = text(ax, 1, 0, '', ...
-            'Color', themeValue.titleColor, ...
+            'Color', [0.98 0.99 1.00], ...
             'HorizontalAlignment', 'center', ...
             'VerticalAlignment', 'bottom', ...
             'FontWeight', 'bold', ...
-            'FontSize', 12);
+            'FontSize', 13);
     end
 
     % -------------------------------------------------------------------------
@@ -848,17 +883,23 @@ function mainC()
     function updateBarItem(item, frameIdx, controlState)
         value = resolveBarValue(item.spec, frameIdx, controlState);
 
+        % Clamp value to the fixed y-axis range
+        yMin = item.spec.yLimits(1);
+        yMax = item.spec.yLimits(2);
+        value = min(max(value, yMin), yMax);
+
         % Set bar height to current value
         set(item.bar, 'YData', value);
 
-        % Expand y-axis ceiling if needed (adds 15% headroom above the value)
-        yMax = max(item.spec.yLimits(2), value * 1.15 + 1);
-        set(item.ax, 'YLim', [item.spec.yLimits(1) yMax]);
+        % Keep y-axis fixed at the spec limits — no auto-expand
+        set(item.ax, 'YLim', [yMin yMax]);
 
-        % Position the numeric label just above the bar top and format it
+        % Position the numeric label just above the bar top
+        % Show as "value / max" to give buffer fill context
+        labelOffset = 0.03 * (yMax - yMin);
         set(item.valueText, ...
-            'Position', [1, value + 0.04 * max(1, yMax), 0], ...
-            'String', sprintf('%.0f', value));
+            'Position', [1, min(value + labelOffset, yMax * 0.97), 0], ...
+            'String', sprintf('%.0f / %.0f', value, yMax));
     end
 
     % -------------------------------------------------------------------------
@@ -1226,6 +1267,13 @@ function controlConfig = loadControlStub(data, numSteps, big_mat, opMode)
     % 'AUTO' infers from contact flags (legacy behaviour).
     ACTIVE_BAND = 'S-BAND';
     controlConfig.stubCommSelection = repmat({ACTIVE_BAND}, 1, numSteps);
+
+    % Live fields updated every loop from the C pipe.
+    % Initialised here so queryExternalControlStateStub can read them safely
+    % before the first pipe read completes.
+    controlConfig.liveActiveBand  = ACTIVE_BAND;  % overridden by s.freq each loop
+    controlConfig.livePacketCount = 0;             % overridden by s.count each loop
+    controlConfig.liveTasks       = '';            % overridden by s.tasks each loop
 
     % Optional per-frame packet count; fills with 0 if not in the .mat file.
     % 'previous' method holds the last known value forward over gaps.
@@ -1598,28 +1646,24 @@ function slides = buildSlides(big_mat, orbit, opMode)
 
     % --- Slide 4: Computer Science ---
     slides(4).title        = 'Computer Science';
-    slides(4).subtitle     = 'Buffer visualization with future software telemetry hooks.';
+    slides(4).subtitle     = 'Buffer visualization with software telemetry.';
     slides(4).showGroundRing = true;
 
-    % Left: packet buffer bar chart + expansion placeholder
+    % Left: packet buffer bar (max 128) + telemetry text card below
+    csTelemetryItem = makeTextItem('Telemetry', 'csTelemetry', 0.45, 9);
+    csTelemetryItem.bodyFont = 'Courier New';
     slides(4).leftItems = [ ...
-        makeBarItem('Packet Buffer', 'Queued Packets', 'Buffer', [0 10], [0.32 0.72 1.00], 0.55), ...
-        makePlaceholderItem('Computer Science Plot Stub', ...
-            sprintf(['TODO: add more CS-side plots here.\n' ...
-                     'Examples:\n' ...
-                     '- command latency\n' ...
-                     '- queue depth history\n' ...
-                     '- packet drop count']), 0.45)];
+        makeBarItem('Packet Buffer', 'Queued Packets', 'Buffer', [0 128], [0.32 0.72 1.00], 0.55), ...
+        csTelemetryItem];
 
-    % Right: software telemetry stub text + additional placeholder
+    % Right: mode management text card + software information below
+    modeManagementItem = makeTextItem('Mode Management', 'modeManagement', 0.55, 9);
+    modeManagementItem.bodyFont = 'Courier New';
+    swInfoItem = makeTextItem('Software Information', 'swInfo', 0.45, 9);
+    swInfoItem.bodyFont = 'Courier New';
     slides(4).rightItems = [ ...
-        makeTextItem('Software Telemetry Stub', 'csStub', 0.50, 10), ...
-        makePlaceholderItem('Additional Text / Controls Stub', ...
-            sprintf(['TODO: reserve this space for software state text.\n' ...
-                     'Possible future fields:\n' ...
-                     '- task mode\n' ...
-                     '- watchdog state\n' ...
-                     '- uplink command status']), 0.50)];
+        modeManagementItem, ...
+        swInfoItem];
 end
 
 % -----------------------------------------------------------------------------
@@ -1747,26 +1791,39 @@ end
 % from the orbit data.
 % -----------------------------------------------------------------------------
 function controlState = queryExternalControlStateStub(frameIdx, orbit, controlConfig)
-    % Resolve the requested band for this frame (may be 'AUTO', 'UHF', etc.)
-    requestedBand = upper(controlConfig.stubCommSelection{frameIdx});
+    % Active band: use the live value written by the main loop from s.freq.
+    % Falls back to stubCommSelection if liveActiveBand is not yet set.
+    if isfield(controlConfig, 'liveActiveBand') && ~isempty(controlConfig.liveActiveBand)
+        activeBand = upper(controlConfig.liveActiveBand);
+    else
+        requestedBand = upper(controlConfig.stubCommSelection{frameIdx});
+        autoBand      = inferActiveBand(frameIdx, orbit);
+        switch requestedBand
+            case 'UHF',                          activeBand = 'UHF';
+            case {'S-BAND','SBAND','S_BAND'},     activeBand = 'S-BAND';
+            otherwise,                           activeBand = autoBand;
+        end
+    end
 
-    % Infer which band would be active based purely on contact flags
-    autoBand = inferActiveBand(frameIdx, orbit);
+    % Packet count: live value from s.count (falls back to static series)
+    if isfield(controlConfig, 'livePacketCount')
+        packetCount = controlConfig.livePacketCount;
+    else
+        packetCount = controlConfig.packetCount(frameIdx);
+    end
 
-    % If an explicit band is requested, honour it; otherwise use the auto result
-    switch requestedBand
-        case 'UHF'
-            activeBand = 'UHF';
-        case {'S-BAND', 'SBAND', 'S_BAND'}
-            activeBand = 'S-BAND';
-        otherwise
-            activeBand = autoBand;
+    % Task string: live value from s.tasks
+    if isfield(controlConfig, 'liveTasks')
+        pipeTasks = controlConfig.liveTasks;
+    else
+        pipeTasks = '';
     end
 
     controlState.activeBand  = activeBand;
     controlState.modeLabel   = controlConfig.stubModeLabel{frameIdx};
-    controlState.packetCount = controlConfig.packetCount(frameIdx);
+    controlState.packetCount = packetCount;
     controlState.opMode      = controlConfig.opMode;
+    controlState.pipeTasks   = pipeTasks;
 
     % Per-frame values needed by the power slide dynamic load lines
     controlState.genPower  = controlConfig.genPower(frameIdx);
@@ -2137,7 +2194,7 @@ function bodyText = buildTextBody(textRole, frameIdx, controlState, orbit)
                                     orbit.numContactsSeries(frameIdx));
             end
         case 'csStub'
-            % Computer science / software telemetry stub
+            % Computer science / software telemetry stub (legacy — kept for reference)
             bodyText = sprintf(['Packet buffer count: %.0f\n' ...
                                 'Mode input: %s\n' ...
                                 'Ground contact: %s\n\n' ...
@@ -2147,6 +2204,66 @@ function bodyText = buildTextBody(textRole, frameIdx, controlState, orbit)
                                 controlState.packetCount, ...
                                 controlState.modeLabel, ...
                                 logicalText(controlState.isInContact));
+
+        case 'csTelemetry'
+            % ----------------------------------------------------------------
+            % TELEMETRY CARD
+            % Shows contact boolean and packet buffer fill out of 128.
+            % ----------------------------------------------------------------
+            if controlState.isInContact
+                contactStr = 'true';
+            else
+                contactStr = 'false';
+            end
+            bodyText = sprintf(['In contact  = %s\n' ...
+                                'Buffer      = %.0f / 128'], ...
+                                contactStr, ...
+                                controlState.packetCount);
+
+        case 'modeManagement'
+            % ----------------------------------------------------------------
+            % MODE MANAGEMENT CARD
+            % Op mode is mapped from s.mode (2=Nominal, 3=Peak, 4=Safe).
+            % Active task list is parsed from controlState.pipeTasks, which
+            % is the raw string received from s.tasks via the C pipe.
+            % Expected format: comma-separated task names, e.g.
+            %   "Downlink TX, Buffer flush, ADCS control"
+            % An empty string or whitespace-only string shows "(none)".
+            % ----------------------------------------------------------------
+
+            % Parse pipe task string into individual task names
+            rawTasks = strtrim(controlState.pipeTasks);
+            if isempty(rawTasks)
+                parsedTasks = {};
+            else
+                parts = strsplit(rawTasks, ',');
+                parsedTasks = strtrim(parts);
+                % Remove any empty tokens produced by trailing commas
+                parsedTasks = parsedTasks(~cellfun('isempty', parsedTasks));
+            end
+
+            % Build task list display lines
+            if isempty(parsedTasks)
+                taskLines = 'Active tasks: (none)';
+            else
+                taskLines = 'Active tasks:';
+                for tIdx = 1:numel(parsedTasks)
+                    taskLines = [taskLines, sprintf('\n  [%d] %s', tIdx, parsedTasks{tIdx})]; %#ok<AGROW>
+                end
+            end
+
+            bodyText = sprintf('Op mode     = %s\n\n%s', ...
+                                controlState.opMode, taskLines);
+        case 'swInfo'
+            % ----------------------------------------------------------------
+            % SOFTWARE INFORMATION CARD
+            % Static fields describing the onboard software and simulation
+            % environment. Update these strings if the configuration changes.
+            % ----------------------------------------------------------------
+            bodyText = sprintf(['Operating System  = FreeRTOS\n' ...
+                                'Backend Sim       = POSIX\n'    ...
+                                'Onboard Computer  = NanoMind A3200']);
+
         case 'simBackend'
             % ----------------------------------------------------------------
             % SIMULATION BACK END CARD
