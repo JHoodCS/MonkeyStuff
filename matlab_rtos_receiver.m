@@ -21,7 +21,7 @@
 %% ============================================================
 %% ============================================================
 
-function matlab_pipe_receiver()
+function matlab_rtos_receiver()
 
 PIPE_PATH = "/tmp/expo_matlab_from_rtos_pipe";
 
