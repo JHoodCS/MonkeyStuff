@@ -1,15 +1,15 @@
-% =============================================================
+% =======================================================================================
 % BACKGROUND PIPE RECEIVER
 %
 % Usage:
 %
-%   matlab_client_receiver()        % start receiver
-%   matlab_client_receiver('stop')  % stop receiver
+%   matlab_client_receiver()                % start receiver
+%   s = matlab_client_receiver('state');    % set up variable for accessing queue status
+%   matlab_client_receiver('stop')          % stop receiver
 %
-%   s = matlab_client_receiver('state');
-%   s.contact
+%   s.contact                               % get number of items in queue
 %
-% =============================================================
+% =======================================================================================
 
 function out = matlab_client_receiver(cmd)
 
