@@ -1662,11 +1662,11 @@ function slides = buildSlides(big_mat, orbit, opMode)
     slides(4).subtitle     = 'Buffer visualization with software telemetry.';
     slides(4).showGroundRing = true;
 
-    % Left: packet buffer bar (max 128) + telemetry text card below
+    % Left: packet buffer bar (max 512) + telemetry text card below
     csTelemetryItem = makeTextItem('Telemetry', 'csTelemetry', 0.45, 9);
     csTelemetryItem.bodyFont = 'Courier New';
     slides(4).leftItems = [ ...
-        makeBarItem('Packet Buffer', 'Queued Packets', 'Buffer', [0 128], [0.32 0.72 1.00], 0.55), ...
+        makeBarItem('Packet Buffer', 'Queued Packets', 'Buffer', [0 512], [0.32 0.72 1.00], 0.55), ...
         csTelemetryItem];
 
     % Right: mode management text card + software information below
@@ -2221,7 +2221,7 @@ function bodyText = buildTextBody(textRole, frameIdx, controlState, orbit)
         case 'csTelemetry'
             % ----------------------------------------------------------------
             % TELEMETRY CARD
-            % Shows contact boolean and packet buffer fill out of 128.
+            % Shows contact boolean and packet buffer fill out of 512.
             % ----------------------------------------------------------------
             if controlState.isInContact
                 contactStr = 'true';
@@ -2229,7 +2229,7 @@ function bodyText = buildTextBody(textRole, frameIdx, controlState, orbit)
                 contactStr = 'false';
             end
             bodyText = sprintf(['In contact  = %s\n' ...
-                                'Buffer      = %.0f / 128'], ...
+                                'Buffer      = %.0f / 512'], ...
                                 contactStr, ...
                                 controlState.packetCount);
 
