@@ -20,7 +20,7 @@ function matlab_client_sender(bit)
     % matlab_client_sender(0)    -> send 0
 
     persistent fid
-    PIPE_PATH = '/tmp/expo_client_from_matlab_pipe';
+    PIPE_PATH = "\\wsl.localhost\Ubuntu\tmp\expo_client_from_matlab_pipe";
 
     % ---------- INIT ----------
     if nargin == 0

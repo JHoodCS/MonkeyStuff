@@ -43,7 +43,7 @@ function out = matlab_state_client(cmd)
 
     % ---------------- INIT ----------------
     if nargin == 0
-        shm.path = "/dev/shm/matlab_state.bin";
+        shm.path = "\\wsl.localhost\Ubuntu\dev\shm\matlab_state.bin";
         shm.fid = fopen(shm.path,'r');
 
         if shm.fid < 0
