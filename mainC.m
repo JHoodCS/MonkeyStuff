@@ -194,7 +194,7 @@ function mainC()
 
         % Live packet count and task string from pipe
         controlConfig.livePacketCount = s.count;
-        controlConfig.liveTasks       = s.tasks;
+        %controlConfig.liveTasks       = s.tasks;
 
         % Propagate updated opMode into controlConfig for this frame
         controlConfig.opMode = opMode;
